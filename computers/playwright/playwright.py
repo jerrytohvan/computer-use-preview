@@ -106,27 +106,45 @@ class PlaywrightComputer(Computer):
         self._playwright = sync_playwright().start()
         
         if self._user_data_dir:
-            # Handle Chrome profile path: .../Chrome/Profile 1 -> .../Chrome/User Data
+            # Handle Chrome profile path detection
+            # Supports: .../Chrome/User Data/Profile 1 or .../Chrome/Profile 1 (when Chrome dir IS User Data)
             profile_dir = None
             user_data_dir = self._user_data_dir
             current_name = os.path.basename(user_data_dir)
             parent_dir = os.path.dirname(user_data_dir)
             
-            # If provided path is a profile directory (Profile 1, Profile 2, etc.), 
-            # find the "User Data" parent directory
-            if current_name in ("Default", "Profile 1", "Profile 2", "Profile 3", "Profile 4", "Profile 5"):
+            # Check if current path is a profile directory (Default or Profile N)
+            is_profile_dir = (
+                current_name == "Default" or 
+                (current_name.startswith("Profile ") and len(current_name) > 8)
+            )
+            
+            if is_profile_dir:
+                # Try to find the User Data directory
                 user_data_candidate = os.path.join(parent_dir, "User Data")
                 if os.path.isdir(user_data_candidate):
+                    # Standard structure: parent/User Data/Profile X
                     profile_dir = current_name
                     user_data_dir = user_data_candidate
-                    termcolor.cprint(
-                        f"Detected profile: {profile_dir}, using User Data directory: {user_data_dir}",
-                        color="cyan",
-                    )
                 elif os.path.basename(parent_dir) == "User Data":
-                    # Already pointing to User Data/Profile X
+                    # Already in User Data/Profile X structure
                     profile_dir = current_name
                     user_data_dir = parent_dir
+                else:
+                    # Check if parent contains other profiles (parent IS User Data)
+                    try:
+                        parent_contents = os.listdir(parent_dir)
+                        if any(
+                            (item.startswith("Profile ") or item == "Default") and
+                            os.path.isdir(os.path.join(parent_dir, item))
+                            for item in parent_contents
+                        ):
+                            profile_dir = current_name
+                            user_data_dir = parent_dir
+                    except Exception:
+                        pass
+                
+                if profile_dir:
                     termcolor.cprint(
                         f"Detected profile: {profile_dir}, using User Data directory: {user_data_dir}",
                         color="cyan",

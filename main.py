@@ -78,8 +78,11 @@ def main() -> int:
     if args.chrome_profile:
         # Expand ~ to home directory
         user_data_dir = os.path.expanduser(args.chrome_profile)
-        # Convert to absolute path
-        user_data_dir = os.path.abspath(user_data_dir)
+        # Normalize the path (resolve . and ..)
+        user_data_dir = os.path.normpath(user_data_dir)
+        # Convert to absolute path only if not already absolute
+        if not os.path.isabs(user_data_dir):
+            user_data_dir = os.path.abspath(user_data_dir)
         
         # Validate that the directory exists
         if not os.path.isdir(user_data_dir):
