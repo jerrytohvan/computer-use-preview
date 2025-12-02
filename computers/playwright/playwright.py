@@ -82,14 +82,12 @@ class PlaywrightComputer(Computer):
         search_engine_url: str = "https://www.google.com",
         highlight_mouse: bool = False,
         user_data_dir: str | None = None,
-        use_system_chrome: bool = False,
     ):
         self._initial_url = initial_url
         self._screen_size = screen_size
         self._search_engine_url = search_engine_url
         self._highlight_mouse = highlight_mouse
         self._user_data_dir = user_data_dir
-        self._use_system_chrome = use_system_chrome
 
     def _handle_new_page(self, new_page: playwright.sync_api.Page):
         """The Computer Use model only supports a single tab at the moment.
@@ -149,6 +147,13 @@ class PlaywrightComputer(Computer):
                         f"Detected profile: {profile_dir}, using User Data directory: {user_data_dir}",
                         color="cyan",
                     )
+                else:
+                    # If no profile directory was detected, use the provided path as user_data_dir
+                    # This handles cases where the path structure is non-standard
+                    termcolor.cprint(
+                        f"Using provided path as user data directory: {user_data_dir}",
+                        color="cyan",
+                    )
             
             # Check for Chrome lock file - indicates Chrome might still be running
             lock_file = os.path.join(user_data_dir, "SingletonLock")
@@ -172,6 +177,18 @@ class PlaywrightComputer(Computer):
                     "--disable-dev-shm-usage",
                     "--disable-background-networking",
                     "--disable-default-apps",
+                    # Prevent Chrome from showing dialogs or restore prompts that could block
+                    "--no-first-run",
+                    "--no-default-browser-check",
+                    "--disable-restore-session-state",
+                    # Additional flags to prevent hangs with system Chrome
+                    "--disable-background-timer-throttling",
+                    "--disable-renderer-backgrounding",
+                    "--disable-features=TranslateUI",
+                    "--disable-ipc-flooding-protection",
+                    # Prevent session restore which can cause hangs
+                    "--disable-session-crashed-bubble",
+                    "--disable-hang-monitor",
                     # No '--no-sandbox' arg means the sandbox is on.
                 ]
                 
@@ -179,28 +196,13 @@ class PlaywrightComputer(Computer):
                 if profile_dir:
                     args.append(f"--profile-directory={profile_dir}")
                 
-                # Option to use system Chrome instead of Playwright's bundled Chromium
-                # This can work better with existing Chrome profiles
-                executable_path = None
-                if self._use_system_chrome:
-                    # Try to find system Chrome on macOS
-                    chrome_paths = [
-                        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-                        "/Applications/Chromium.app/Contents/MacOS/Chromium",
-                    ]
-                    for path in chrome_paths:
-                        if os.path.exists(path):
-                            executable_path = path
-                            termcolor.cprint(
-                                f"Using system Chrome: {executable_path}",
-                                color="cyan",
-                            )
-                            break
-                    if not executable_path:
-                        termcolor.cprint(
-                            "Warning: System Chrome not found, using Playwright's Chromium",
-                            color="yellow",
-                        )
+                termcolor.cprint(
+                    "Using Playwright's Chromium with Chrome profile...",
+                    color="cyan",
+                )
+                termcolor.cprint(f"Launching browser with profile (user_data_dir: {user_data_dir})...", color="cyan")
+                if profile_dir:
+                    termcolor.cprint(f"Profile directory: {profile_dir}", color="cyan")
                 
                 self._context = self._playwright.chromium.launch_persistent_context(
                     user_data_dir=user_data_dir,
@@ -210,10 +212,36 @@ class PlaywrightComputer(Computer):
                     },
                     args=args,
                     headless=bool(os.environ.get("PLAYWRIGHT_HEADLESS", False)),
-                    executable_path=executable_path,
                 )
+                termcolor.cprint("Persistent context launched, initializing page...", color="cyan")
                 # With persistent context, pages are managed differently
-                self._page = self._context.pages[0] if self._context.pages else self._context.new_page()
+                # Wait for at least one page to be available (persistent context may create pages asynchronously)
+                # Give Chrome a moment to initialize pages
+                max_wait_attempts = 10
+                for attempt in range(max_wait_attempts):
+                    if self._context.pages:
+                        break
+                    time.sleep(0.5)
+                
+                if not self._context.pages:
+                    # If no pages exist yet, create one
+                    termcolor.cprint("No pages found, creating new page...", color="cyan")
+                    self._page = self._context.new_page()
+                else:
+                    # Use the first available page and wait for it to be ready
+                    termcolor.cprint(f"Found {len(self._context.pages)} existing page(s), using first page...", color="cyan")
+                    self._page = self._context.pages[0]
+                    # Wait for the page to be in a ready state before proceeding
+                    try:
+                        # Wait for the page to be in a stable state
+                        termcolor.cprint("Waiting for page to be ready...", color="cyan")
+                        self._page.wait_for_load_state("domcontentloaded", timeout=15000)
+                        termcolor.cprint("Page is ready.", color="cyan")
+                    except Exception as e:
+                        # If the page is already loaded or times out, continue anyway
+                        # This can happen if the page is on chrome:// URLs or is still initializing
+                        termcolor.cprint(f"Page load state check completed (may have timed out): {e}", color="yellow")
+                        pass
                 self._browser = None  # Persistent context manages browser internally
             except Exception as e:
                 termcolor.cprint(
@@ -248,7 +276,27 @@ class PlaywrightComputer(Computer):
             )
             self._page = self._context.new_page()
         
-        self._page.goto(self._initial_url)
+        # Navigate to initial URL and wait for it to load
+        # For persistent context, the page might already be on a different URL, so always navigate
+        termcolor.cprint(f"Navigating to {self._initial_url}...", color="cyan")
+        try:
+            self._page.goto(self._initial_url, wait_until="domcontentloaded", timeout=30000)
+            termcolor.cprint("Navigation completed, waiting for network idle...", color="cyan")
+            # Wait for network to be idle, but don't fail if it times out
+            try:
+                self._page.wait_for_load_state("networkidle", timeout=10000)
+                termcolor.cprint("Network idle.", color="cyan")
+            except Exception:
+                # Network might not become idle, continue anyway
+                termcolor.cprint("Network idle timeout (continuing anyway)...", color="yellow")
+                pass
+        except Exception as e:
+            termcolor.cprint(
+                f"Warning: Navigation to {self._initial_url} may have failed: {e}",
+                color="yellow",
+            )
+            # Try to continue anyway - the page might still be usable
+        termcolor.cprint("Setting up page event handler...", color="cyan")
         self._context.on("page", self._handle_new_page)
 
         termcolor.cprint(

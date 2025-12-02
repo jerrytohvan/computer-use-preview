@@ -64,13 +64,6 @@ def main() -> int:
              "Find your exact path in Chrome by visiting chrome://version/ and looking for 'Profile Path'. "
              "If not specified, a temporary profile will be used.",
     )
-    parser.add_argument(
-        "--use_system_chrome",
-        action="store_true",
-        default=False,
-        help="Use system Chrome executable instead of Playwright's bundled Chromium. "
-             "This can work better with existing Chrome profiles and managed profiles.",
-    )
     args = parser.parse_args()
 
     # Expand user profile path if provided
@@ -98,7 +91,6 @@ def main() -> int:
             initial_url=args.initial_url,
             highlight_mouse=args.highlight_mouse,
             user_data_dir=user_data_dir,
-            use_system_chrome=args.use_system_chrome,
         )
     elif args.env == "browserbase":
         env = BrowserbaseComputer(
